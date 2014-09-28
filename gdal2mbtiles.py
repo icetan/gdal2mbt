@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
-import os, sys, math, json
+import os, math, json
+from sys import stderr, argv
 from itertools import dropwhile
 from getopt import getopt
 from os.path import join, isfile
@@ -120,7 +121,7 @@ def to_wgs84(srs, lng, lat):
     return (point.GetX(), point.GetY())
 
 # Get input parameters from shell
-opts, args = getopt(sys.argv[1:], 'vrc:')
+opts, args = getopt(argv[1:], 'vrc:')
 verbose = ('-v','') in opts
 resume = ('-r','') in opts
 for o, v in opts:
@@ -197,7 +198,7 @@ if isfile(out_fn):
     if resume:
         db = sqlite3.connect(out_fn)
     else:
-        stderr.writeln("MBTiles file already exists, use -r to resume.")
+        stderr.write("MBTiles file already exists, use -r to resume.\n")
         exit(1)
 else:
     db = create_mbtile(out_fn, **metadata)
