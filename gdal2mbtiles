@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 
 """
-Usage: %s [-rv] (<gdal file> <zoom levels> <mbtiles> | -c <config file> [mbtiles])
+Usage: %s [-hrv] (<source> <num_levels> <mbtiles> | -c <config file> [mbtiles])
 
-    -r      Resume
-    -v      Verbose output
+    -c <config file>    Use a config JSON file
+    -h                  This message
+    -r                  Resume
+    -v                  Verbose output
 """
 
 import json, logging
@@ -14,16 +16,20 @@ from getopt import getopt
 
 import gdal2mbtiles
 
-usage = __doc__ % argv[0]
+def usage():
+    stderr.write(__doc__ % argv[0])
+    exit(1)
 
 resume = False
 config = None
 
 # Get input parameters from shell
-opts, args = getopt(argv[1:], 'vrc:')
+opts, args = getopt(argv[1:], 'hvrc:')
 for o, v in opts:
     if o == '-c':
         with open(v, 'rb') as fp: config = json.load(fp)
+    if o == '-h':
+        usage()
     if o == '-v':
         logging.basicConfig(level=logging.INFO, format='%(message)s')
     if o == '-r':
@@ -41,8 +47,7 @@ try:
     mbtiles = config['mbtiles'] = str(config['mbtiles'])
     config['source'] = str(config['source'])
 except:
-    stderr.write(usage)
-    exit(1)
+    usage()
 
 if isfile(mbtiles):
     if resume:
