@@ -1,0 +1,55 @@
+#!/usr/bin/env python
+
+"""
+Usage: %s [-rv] (<gdal file> <zoom levels> <mbtiles> | -c <config file> [mbtiles])
+
+    -r      Resume
+    -v      Verbose output
+"""
+
+import json, logging
+from sys import exit, stderr, argv
+from os.path import join, isfile
+from getopt import getopt
+
+import gdal2mbtiles
+
+usage = __doc__ % argv[0]
+
+resume = False
+config = None
+
+# Get input parameters from shell
+opts, args = getopt(argv[1:], 'vrc:')
+for o, v in opts:
+    if o == '-c':
+        with open(v, 'rb') as fp: config = json.load(fp)
+    if o == '-v':
+        logging.basicConfig(level=logging.INFO, format='%(message)s')
+    if o == '-r':
+        resume = True
+
+try:
+    if config is None:
+        config = {
+            'source': args[0],
+            'num_levels': int(args[1]),
+            'mbtiles': args[2]
+        }
+    elif len(args) >= 1:
+        config['mbtiles'] = args[0]
+    mbtiles = config['mbtiles'] = str(config['mbtiles'])
+    config['source'] = str(config['source'])
+except:
+    stderr.write(usage)
+    exit(1)
+
+if isfile(mbtiles):
+    if resume:
+        config.pop('metadata', None)
+        gdal2mbtiles.resume(**config)
+    else:
+        stderr.write("MBTiles file %s already exists, use -r to resume.\n" % mbtiles)
+        exit(2)
+else:
+    gdal2mbtiles.create(**config)
