@@ -4,13 +4,14 @@
 
 Options:
 
-    -v                      Verbose output
     -c <config file>        Read config JSON from file or if `-` from STDIN
+    -s                      Use with `merge` to delete files after they are merged
+    -r                      Resume the creation of a MBTiles file, use with `create`
+    -v                      Verbose output
 
 Commands:
 
     create <file> <num_levels> <source> Create an MBTiles file from a GDAL source
-    resume <file> <num_levels> <source> Resume the creation of a MBTiles file
     config <source> <num_levels>        Generate gdal2mbt JSON configs
     merge  <file> <mbtiles>...          Merge MBTiles files
     levels <file> <num_levels>          Add or remove levels from MBTiles file
@@ -42,7 +43,7 @@ def update_config(keys, value=args):
 try:
     # Get input parameters from shell
     command = argv[1].lower()
-    opts, args = getopt(argv[2:], 'c:hvs')
+    opts, args = getopt(argv[2:], 'c:vs')
     for o, v in opts:
         if o == '-c':
             if v == '-':
@@ -52,8 +53,6 @@ try:
                     with open(v, 'rb') as fp: config = json.load(fp)
                 else:
                     config = json.loads(v)
-        if o == '-h':
-            usage()
         if o == '-v':
             logging.basicConfig(level=logging.INFO, format='%(message)s')
 except:
@@ -62,16 +61,13 @@ except:
 if command == 'create':
     update_config(('mbtiles', 'num_levels', 'source'))
     if isfile(config['mbtiles']):
-        stderr.write("MBTiles file %s already exists, use -r to resume.\n" % config['mbtiles'])
-        exit(2)
-    else:
-        gdal2mbt.create(**config)
-
-elif command == 'resume':
-    update_config(('mbtiles', 'num_levels', 'source'))
-    if isfile(config['mbtiles']):
-        config.pop('metadata', None)
-        gdal2mbt.resume(**config)
+        if ('-r','') in opts:
+            config.pop('metadata', None)
+            gdal2mbt.resume(**config)
+        else:
+            stderr.write("MBTiles file %s already exists, use -r to resume.\n" %
+                config['mbtiles'])
+            exit(2)
     else:
         gdal2mbt.create(**config)
 
