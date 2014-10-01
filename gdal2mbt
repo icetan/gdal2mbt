@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
-"""
-Usage: %s COMMAND [OPTIONS] arguments...
+"""Usage: %s COMMAND [OPTIONS] arguments...
 
 Options:
 
@@ -16,29 +15,35 @@ Commands:
     merge  <file> <mbtiles>...          Merge MBTiles files
     levels <file> <num_levels>          Add or remove levels from MBTiles file
     help                                This message
+
 """
 
-import json, logging
+import json, logging, os
 from sys import exit, stderr, stdin, argv
 from os.path import join, isfile, basename
 from getopt import getopt
 
 import gdal2mbt
 
+config = {}
+args = []
+
 def usage():
     stderr.write(__doc__ % argv[0])
     exit(1)
 
-config = {}
+def update_config(keys, value=args):
+    try:
+        config.update(dict(zip(keys, args)))
+    except:
+        usage()
+
 
 try:
-
     # Get input parameters from shell
     command = argv[1].lower()
-    opts, args = getopt(argv[2:], 'c:hv')
+    opts, args = getopt(argv[2:], 'c:hvs')
     for o, v in opts:
-        if o == '-s':
-            set_levels = int(v)
         if o == '-c':
             if v == '-':
                 config = json.load(stdin)
@@ -47,43 +52,51 @@ try:
                     with open(v, 'rb') as fp: config = json.load(fp)
                 else:
                     config = json.loads(v)
-        if o == '-h': usage()
+        if o == '-h':
+            usage()
         if o == '-v':
             logging.basicConfig(level=logging.INFO, format='%(message)s')
-
-    def update_config(keys, value=args): config.update(dict(zip(keys, args)))
-
-    if command == 'create':
-        update_config(('mbtiles', 'num_levels', 'source'))
-        if isfile(config['mbtiles']):
-            stderr.write("MBTiles file %s already exists, use -r to resume.\n" % config['mbtiles'])
-            exit(2)
-        else:
-            gdal2mbt.create(**config)
-
-    elif command == 'resume':
-        update_config(('mbtiles', 'num_levels', 'source'))
-        if isfile(config['mbtiles']): config.pop('metadata', None)
-        gdal2mbt.resume(**config)
-
-    elif command == 'merge':
-        gdal2mbt.merge(*args)
-
-    elif command == 'levels':
-        update_config(('mbtiles', 'num_levels'))
-        gdal2mbt.set_levels(set_levels, int(args[0]))
-
-    elif command == 'config':
-        update_config(('source', 'num_levels'))
-        source_name = basename(config['source'])
-        source_name = source_name[:source_name.rfind('.')]
-        name = config.get('metadata', {}).get('name', source_name).replace(' ','_')
-        mbtiles_tmpl = "%s.%%d.mbtiles" % name
-        count = 0
-        for sub in gdal2mbt.split(config['num_levels'], config['source']):
-            config['mbtiles'] = mbtiles_tmpl % count
-            config['sub_bounds'] = sub
-            print json.dumps(config)
-            count += 1
 except:
     usage()
+
+if command == 'create':
+    update_config(('mbtiles', 'num_levels', 'source'))
+    if isfile(config['mbtiles']):
+        stderr.write("MBTiles file %s already exists, use -r to resume.\n" % config['mbtiles'])
+        exit(2)
+    else:
+        gdal2mbt.create(**config)
+
+elif command == 'resume':
+    update_config(('mbtiles', 'num_levels', 'source'))
+    if isfile(config['mbtiles']):
+        config.pop('metadata', None)
+        gdal2mbt.resume(**config)
+    else:
+        gdal2mbt.create(**config)
+
+elif command == 'merge':
+    if ('-s','') in opts:
+        out = args[0]
+        for db in args[1:]:
+            gdal2mbt.merge(out, db)
+            os.remove(db)
+    else:
+        gdal2mbt.merge(*args)
+
+elif command == 'levels':
+    update_config(('mbtiles', 'num_levels'))
+    gdal2mbt.set_levels(config['mbtiles'], config['num_levels'])
+
+elif command == 'config':
+    update_config(('source', 'num_levels'))
+    source_name = basename(config['source'])
+    source_name = source_name[:source_name.rfind('.')]
+    name = config.get('metadata', {}).get('name', source_name).replace(' ','_')
+    mbtiles_tmpl = "%s.%%d.mbtiles" % name
+    count = 0
+    for sub in gdal2mbt.split(config['num_levels'], config['source']):
+        config['mbtiles'] = mbtiles_tmpl % count
+        config['sub_bounds'] = sub
+        print json.dumps(config)
+        count += 1

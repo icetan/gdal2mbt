@@ -4,6 +4,7 @@ import math
 from itertools import dropwhile
 from io import BytesIO
 from logging import info, debug
+from os.path import isfile
 
 import sqlite3
 
@@ -29,7 +30,7 @@ def _get_gdal_extent(ds):
     # Read transform data from GeoTiff
     top_left_x, x_res, _, top_left_y, _, negative_y_res = ds.GetGeoTransform()
     if x_res != -negative_y_res:
-        raise Error("Vertical resolution not same as horizontal.")
+        raise Exception("Vertical resolution not same as horizontal.")
     return (top_left_x,
             top_left_y + negative_y_res * ds.RasterYSize,
             top_left_x + x_res * ds.RasterXSize,
@@ -56,7 +57,7 @@ def _get_gdal_image(ds, ox, oy, w, h):
     elif ds.RasterCount == 4:
         mode = 'RGBA'
     else:
-        raise Error("Number of bands not supported %d" % ds.RasterCount)
+        raise Exception("Number of bands not supported %d" % ds.RasterCount)
     info("Reading GDAL raster x:%d y:%d %dx%d" % (ox, oy, w, h))
     raw = ds.ReadRaster(ox, oy, w, h)
     # Convert GDALs raster format to a sane one. rrrgggbbb -> rgbrgbrgb
@@ -66,11 +67,11 @@ def _get_gdal_image(ds, ox, oy, w, h):
     return Image.frombytes(mode, (w, h), data)
 
 def _copy_table(db, src, table):
-    info("Copying table %s from %s" % db)
-    with db.cursor() as cur:
-        cur.execute("ATTACH DATABASE ? AS attached_db", (src,))
-        cur.execute("INSERT INTO tiles SELECT * FROM attached_db.?", (table,))
-        cur.execute("DETACH DATABASE attached_db")
+    info("Copying table %s from %s" % (table, src))
+    cur = db.cursor()
+    cur.execute("ATTACH DATABASE ? AS attached_db", (src,))
+    cur.execute("INSERT INTO tiles SELECT * FROM attached_db."+table)
+    cur.execute("DETACH DATABASE attached_db")
 
 def _create_mbtiles(fn, metadata={}):
     db = (sqlite3.connect(fn) if _isstr(fn) else fn)
@@ -80,8 +81,7 @@ def _create_mbtiles(fn, metadata={}):
     db.execute("CREATE TABLE tiles (zoom_level integer,\
                 tile_column integer, tile_row integer, tile_data blob)")
     db.execute("CREATE UNIQUE INDEX metadata_idx ON metadata (name)")
-    db.execute("CREATE UNIQUE INDEX tiles_idx ON tiles\
-                (zoom_level, tile_column, tile_row)")
+    _create_tile_index(db)
     for k, v in metadata.iteritems(): _insert_metadata(db, k, v)
     db.commit()
     return db
@@ -111,6 +111,28 @@ def _get_metadata_from_gdal(ds, metadata={}):
 
 def _create_mbtiles_from_gdal(fn, ds, metadata={}):
     return _create_mbtiles(fn, _get_metadata_from_gdal(ds, metadata))
+
+def _create_tile_index(db):
+    info("Creating tile index")
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS tiles_idx ON tiles\
+                (zoom_level, tile_column, tile_row)")
+    db.commit()
+
+def _drop_tile_index(db):
+    info("Dropping tile index")
+    db.execute("DROP INDEX IF EXISTS tiles_idx")
+    db.commit()
+
+def _create_zoom_level_index(db):
+    info("Creating zoom level index")
+    db.execute("CREATE INDEX IF NOT EXISTS zoom_level_idx ON tiles\
+                (zoom_level)")
+    db.commit()
+
+def _drop_zoom_level_index(db):
+    info("Dropping zoom level index")
+    db.execute("DROP INDEX IF EXISTS zoom_level_idx")
+    db.commit()
 
 def _insert_tile(db, level, tx, ty, buf):
     db.execute("INSERT INTO tiles(zoom_level, tile_column, tile_row, tile_data)\
@@ -161,15 +183,12 @@ def _to_wgs84(srs, x, y): return _trans(srs, WGS84, x, y)
 def _get_gdal_dataset(source):
     if _isstr(source):
         source = gdal.Open(source, GA_ReadOnly)
-        if source is None: raise Error("Couldn't read GDAL file %s" % source)
+        if source is None: raise Exception("Couldn't read GDAL file %s" % source)
     return source
 
 def _tile_coord(x, y, tile_size=TILE_SIZE):
     return (int(math.ceil(x / float(tile_size))),
             int(math.ceil(y / float(tile_size))))
-def _floor_tile_coord(x, y, tile_size=TILE_SIZE):
-    return (int(math.floor(x / float(tile_size))),
-            int(math.floor(y / float(tile_size))))
 
 
 # API functions
@@ -207,7 +226,7 @@ def resume(num_levels, mbtiles, source=None, sub_bounds=DEFAULT_SUB):
         return 1 + sum(level_tiles[:levels[0]-level]) + tx + ty * w
 
     def get_gdal_tile(level, tx, ty):
-        if ds is None: raise Error("No GDAL source supplied")
+        if ds is None: raise Exception("No GDAL source supplied")
         ox = tx*TILE_SIZE
         oy = ((in_ytiles-ty)*TILE_SIZE) - TILE_SIZE -\
             (in_ytiles*TILE_SIZE - in_height)
@@ -241,13 +260,18 @@ def resume(num_levels, mbtiles, source=None, sub_bounds=DEFAULT_SUB):
         for y in xrange(bottom, top)\
         for x in xrange(left, right))
 
-    coord = dropwhile(lambda coord: _tile_exists(db, *coord), tile_coords).next()
-    info("Starting at tile #%d" % get_tile_nr(*coord))
-    create_tile(*coord)
-
-    for coord in tile_coords:
-        info("At tile #%d of %d" % (get_tile_nr(*coord), total_tiles))
+    try:
+        info("Checking for existing tiles")
+        coord = dropwhile(lambda coord: _tile_exists(db, *coord), tile_coords).next()
+    except StopIteration:
+        info("All tiles exist, doing nothing")
+    else:
+        info("Starting at tile #%d" % get_tile_nr(*coord))
         create_tile(*coord)
+
+        for coord in tile_coords:
+            info("At tile #%d of %d" % (get_tile_nr(*coord), total_tiles))
+            create_tile(*coord)
 
 def split(num_levels, source):
     ds = _get_gdal_dataset(source)
@@ -270,18 +294,28 @@ def merge(out, *mbtiles):
     for db in mbtiles:
         _copy_table(out, db, 'tiles')
 
-def set_levels(num_levels, mbtiles):
+def set_levels(mbtiles, num_levels):
     db = (sqlite3.connect(mbtiles) if _isstr(mbtiles) else mbtiles)
     cur = db.cursor()
+    #_create_zoom_level_index(db)
     row = cur.execute("SELECT MAX(zoom_level) FROM tiles").fetchone()
     diff = int(num_levels) - int(row[0])
     if diff > 0:
         info("Adding %d levels to MBTiles file" % diff)
+        _drop_tile_index(db)
+        info("Transposing tile coordinates")
         db.execute("UPDATE tiles SET zoom_level=zoom_level+?", (diff,))
         db.commit()
+        _create_tile_index(db)
         resume(num_levels, db)
     elif diff < 0:
         info("Dropping %d levels from MBTiles file" % -diff)
-        db.execute("DELETE tiles WHERE zoom_level<?", (-diff,))
+        _drop_tile_index(db)
+        info("Deleting levels")
+        db.execute("DELETE FROM tiles WHERE zoom_level<?", (-diff,))
+        info("Transposing tile coordinates")
         db.execute("UPDATE tiles SET zoom_level=zoom_level+?", (diff,))
         db.commit()
+        _create_tile_index(db)
+    else:
+        info("There are already %s zoom levels, doing nothing" % num_levels)
