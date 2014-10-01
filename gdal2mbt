@@ -23,7 +23,7 @@ from sys import exit, stderr, stdin, argv
 from os.path import join, isfile, basename
 from getopt import getopt
 
-import gdal2mbtiles
+import gdal2mbt
 
 def usage():
     stderr.write(__doc__ % argv[0])
@@ -32,6 +32,7 @@ def usage():
 config = {}
 
 try:
+
     # Get input parameters from shell
     command = argv[1].lower()
     opts, args = getopt(argv[2:], 'c:hv')
@@ -58,19 +59,19 @@ try:
             stderr.write("MBTiles file %s already exists, use -r to resume.\n" % config['mbtiles'])
             exit(2)
         else:
-            gdal2mbtiles.create(**config)
+            gdal2mbt.create(**config)
 
     elif command == 'resume':
         update_config(('mbtiles', 'num_levels', 'source'))
         if isfile(config['mbtiles']): config.pop('metadata', None)
-        gdal2mbtiles.resume(**config)
+        gdal2mbt.resume(**config)
 
     elif command == 'merge':
-        gdal2mbtiles.merge(*args)
+        gdal2mbt.merge(*args)
 
     elif command == 'levels':
         update_config(('mbtiles', 'num_levels'))
-        gdal2mbtiles.set_levels(set_levels, int(args[0]))
+        gdal2mbt.set_levels(set_levels, int(args[0]))
 
     elif command == 'config':
         update_config(('source', 'num_levels'))
@@ -79,7 +80,7 @@ try:
         name = config.get('metadata', {}).get('name', source_name).replace(' ','_')
         mbtiles_tmpl = "%s.%%d.mbtiles" % name
         count = 0
-        for sub in gdal2mbtiles.split(config['num_levels'], config['source']):
+        for sub in gdal2mbt.split(config['num_levels'], config['source']):
             config['mbtiles'] = mbtiles_tmpl % count
             config['sub_bounds'] = sub
             print json.dumps(config)
