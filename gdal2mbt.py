@@ -77,10 +77,9 @@ def _create_mbtiles(fn, metadata={}):
     db = (sqlite3.connect(fn) if _isstr(fn) else fn)
 
     # Create empty MBTile file.
-    db.execute("CREATE TABLE metadata (name text, value text)")
-    db.execute("CREATE TABLE tiles (zoom_level integer,\
-                tile_column integer, tile_row integer, tile_data blob)")
-    db.execute("CREATE UNIQUE INDEX metadata_idx ON metadata (name)")
+    db.execute("CREATE TABLE metadata (name TEXT PRIMARY KEY, value TEXT)")
+    db.execute("CREATE TABLE tiles (zoom_level INTEGER,\
+                tile_column INTEGER, tile_row INTEGER, tile_data BLOB)")
     _create_tile_index(db)
     for k, v in metadata.iteritems(): _insert_metadata(db, k, v)
     db.commit()
