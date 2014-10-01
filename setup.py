@@ -1,17 +1,17 @@
 from distutils.core import setup
 
 setup(
-    name='gdal2mbtiles',
+    name='gdal2mbt',
     version='0.1.0',
     requires={
         'Pillow': '>=2.5',
         'GDAL': '>=1.8'
     },
-    py_modules=['gdal2mbtiles'],
-    scripts=['gdal2mbtiles'],
+    py_modules=['gdal2mbt'],
+    scripts=['gdal2mbt'],
 
     description='Create MBTiles from GDAL files.',
-    url='http://github.com/icetan/gdal2mbtiles/',
+    url='http://github.com/icetan/gdal2mbt/',
     license='MIT',
     author='Chirstopher Freden',
     author_email='c.freden@gmail.com',
