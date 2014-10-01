@@ -43,13 +43,18 @@ overwrite the defaults in the MBTiles metadata table.
 gdal2mbt create -c goteborg.json goteborg.mbtiles
 ```
 
+To resume an aborted MBTiles creation process pass the `-r` flag to `create`.
+
 ## Parallel jobs
+
+Speed up MBTiles creation by distributing the load over several processors or
+even computers by using [GNU Parallel](http://www.gnu.org/software/parallel/).
 
 Create an MBTiles file for each tile on zoom level 0, this will depend on the
 second argument which defines how many zoom levels to generate in total.
 
 ```sh
-gdal2mbt config goteborg.vrt 6 | parallel gdal2mbt resume -c
+gdal2mbt config goteborg.vrt 6 | parallel gdal2mbt create -c
 ```
 
 Merge all the created MBTiles to one.
