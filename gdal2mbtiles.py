@@ -17,8 +17,11 @@ WGS84.ImportFromEPSG(4326)
 
 TILE_SIZE = 256
 DEFAULT_FORMAT = 'PNG'
+DEFAULT_SUB = (0, 0, float('inf'), float('inf'))
 
 # Private functions
+
+def _isstr(x): return isinstance(x, str) or isinstance(x, unicode)
 
 def _get_gdal_extent(ds):
     srs = osr.SpatialReference(wkt=ds.GetProjection())
@@ -62,8 +65,15 @@ def _get_gdal_image(ds, ox, oy, w, h):
         for y in xrange(0,h))
     return Image.frombytes(mode, (w, h), data)
 
+def _copy_table(db, src, table):
+    info("Copying table %s from %s" % db)
+    with db.cursor() as cur:
+        cur.execute("ATTACH DATABASE ? AS attached_db", (src,))
+        cur.execute("INSERT INTO tiles SELECT * FROM attached_db.?", (table,))
+        cur.execute("DETACH DATABASE attached_db")
+
 def _create_mbtiles(fn, metadata={}):
-    db = (sqlite3.connect(fn) if isinstance(fn, str) else fn)
+    db = (sqlite3.connect(fn) if _isstr(fn) else fn)
 
     # Create empty MBTile file.
     db.execute("CREATE TABLE metadata (name text, value text)")
@@ -76,7 +86,8 @@ def _create_mbtiles(fn, metadata={}):
     db.commit()
     return db
 
-def _create_mbtiles_from_gdal(fn, ds, metadata={}):
+def _get_metadata_from_gdal(ds, metadata={}):
+    ds = _get_gdal_dataset(ds)
     in_left, in_bottom, in_right, in_top, in_width, in_height,\
         in_res, srs = _get_gdal_extent(ds)
 
@@ -96,9 +107,10 @@ def _create_mbtiles_from_gdal(fn, ds, metadata={}):
 
     for k, v in default_metadata.iteritems():
         if not metadata.has_key(k): metadata[k] = v
+    return metadata
 
-    return _create_mbtiles(fn, metadata)
-
+def _create_mbtiles_from_gdal(fn, ds, metadata={}):
+    return _create_mbtiles(fn, _get_metadata_from_gdal(ds, metadata))
 
 def _insert_tile(db, level, tx, ty, buf):
     db.execute("INSERT INTO tiles(zoom_level, tile_column, tile_row, tile_data)\
@@ -113,13 +125,13 @@ def _insert_bounds(db, left, bottom, right, top):
 
 def _read_metadata(db, name):
     row = db.cursor().execute(
-        "SELECT value FROM metadata WHERE name=?", (name,)).next()
+        "SELECT value FROM metadata WHERE name=?", (name,)).fetchone()
     return row[0]
 
 def _tile_exists(db, level, tx, ty):
     row = db.cursor().execute(
         "SELECT COUNT(*) FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?",
-        (level, tx, ty)).next()
+        (level, tx, ty)).fetchone()
     return row[0] != 0
 
 def _get_quad_mbtiles(db, level, tx, ty):
@@ -147,24 +159,32 @@ def _from_wgs84(srs, x, y): return _trans(WGS84, srs, x, y)
 def _to_wgs84(srs, x, y): return _trans(srs, WGS84, x, y)
 
 def _get_gdal_dataset(source):
-    if isinstance(source, str):
+    if _isstr(source):
         source = gdal.Open(source, GA_ReadOnly)
         if source is None: raise Error("Couldn't read GDAL file %s" % source)
     return source
 
+def _tile_coord(x, y, tile_size=TILE_SIZE):
+    return (int(math.ceil(x / float(tile_size))),
+            int(math.ceil(y / float(tile_size))))
+def _floor_tile_coord(x, y, tile_size=TILE_SIZE):
+    return (int(math.floor(x / float(tile_size))),
+            int(math.floor(y / float(tile_size))))
+
 
 # API functions
 
-def create(num_levels, mbtiles, source, metadata={}):
+def create(num_levels, mbtiles, source, sub_bounds=DEFAULT_SUB, metadata={}):
     ds = _get_gdal_dataset(source)
-    resume(num_levels, _create_mbtiles_from_gdal(mbtiles, ds, metadata), ds)
+    resume(num_levels, _create_mbtiles_from_gdal(mbtiles, ds, metadata),
+           ds, sub_bounds)
 
-def resume(num_levels, mbtiles, source=None):
+def resume(num_levels, mbtiles, source=None, sub_bounds=DEFAULT_SUB):
     ds = _get_gdal_dataset(source)
-    db = (sqlite3.connect(mbtiles) if isinstance(mbtiles, str) else mbtiles)
+    db = (sqlite3.connect(mbtiles) if _isstr(mbtiles) else mbtiles)
 
     format_ = _read_metadata(db, 'format')
-    levels = range(num_levels, -1, -1)
+    levels = range(int(num_levels), -1, -1)
     in_left, in_bottom, in_right, in_top, in_width, in_height, in_res, srs =\
         _get_mbtiles_extent(db)
 
@@ -173,8 +193,14 @@ def resume(num_levels, mbtiles, source=None):
         return (in_width / invf, in_height / invf)
 
     def get_level_tiles(level):
-        w, h = get_level_size(level)
-        return int(math.ceil(w / TILE_SIZE)), int(math.ceil(h / TILE_SIZE))
+        return _tile_coord(*get_level_size(level))
+
+    def get_level_sub(level):
+        level_xtiles, level_ytiles = get_level_tiles(level)
+        invf = 2 ** (levels[0] - level)
+        left, bottom, right, top = map(lambda x: x/invf, sub_bounds)
+        return (max(0, left), max(0, bottom),
+                min(level_xtiles, right), min(level_ytiles, top))
 
     def get_tile_nr(level, tx, ty):
         w, h = get_level_tiles(level)
@@ -210,10 +236,10 @@ def resume(num_levels, mbtiles, source=None):
     total_tiles = sum(level_tiles)
 
     tile_coords = ((level, x, y)
-        for level, (level_xtiles, level_ytiles) in\
-        ((level, get_level_tiles(level)) for level in levels)\
-        for y in xrange(0, level_ytiles)\
-        for x in xrange(0, level_xtiles))
+        for level, (left, bottom, right, top) in\
+        ((level, get_level_sub(level)) for level in levels)\
+        for y in xrange(bottom, top)\
+        for x in xrange(left, right))
 
     coord = dropwhile(lambda coord: _tile_exists(db, *coord), tile_coords).next()
     info("Starting at tile #%d" % get_tile_nr(*coord))
@@ -222,3 +248,40 @@ def resume(num_levels, mbtiles, source=None):
     for coord in tile_coords:
         info("At tile #%d of %d" % (get_tile_nr(*coord), total_tiles))
         create_tile(*coord)
+
+def split(num_levels, source):
+    ds = _get_gdal_dataset(source)
+    in_left, in_bottom, in_right, in_top, in_width, in_height,\
+        in_res, srs = _get_gdal_extent(ds)
+    chunk_size = 2 ** int(num_levels) * TILE_SIZE
+    xchunks, ychunks = _tile_coord(in_width, in_height, chunk_size)
+    return (_tile_coord(cx * chunk_size, cy * chunk_size) +\
+            _tile_coord((cx+1) * chunk_size, (cy+1) * chunk_size)
+                for cy in xrange(0, ychunks)
+                for cx in xrange(0, xchunks))
+
+def merge(out, *mbtiles):
+    if _isstr(out):
+        if isfile(out):
+            out = sqlite3.connect(out)
+        else:
+            out = sqlite3.connect(out)
+            _copy_table(out, mbtiles[0], 'metadata')
+    for db in mbtiles:
+        _copy_table(out, db, 'tiles')
+
+def set_levels(num_levels, mbtiles):
+    db = (sqlite3.connect(mbtiles) if _isstr(mbtiles) else mbtiles)
+    cur = db.cursor()
+    row = cur.execute("SELECT MAX(zoom_level) FROM tiles").fetchone()
+    diff = int(num_levels) - int(row[0])
+    if diff > 0:
+        info("Adding %d levels to MBTiles file" % diff)
+        db.execute("UPDATE tiles SET zoom_level=zoom_level+?", (diff,))
+        db.commit()
+        resume(num_levels, db)
+    elif diff < 0:
+        info("Dropping %d levels from MBTiles file" % -diff)
+        db.execute("DELETE tiles WHERE zoom_level<?", (-diff,))
+        db.execute("UPDATE tiles SET zoom_level=zoom_level+?", (diff,))
+        db.commit()

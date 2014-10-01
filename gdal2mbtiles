@@ -1,17 +1,26 @@
 #!/usr/bin/env python
 
 """
-Usage: %s [-hrv] (<source> <num_levels> <mbtiles> | -c <config file> [mbtiles])
+Usage: %s COMMAND [OPTIONS] arguments...
 
-    -c <config file>    Use a config JSON file
-    -h                  This message
-    -r                  Resume
-    -v                  Verbose output
+Options:
+
+    -v                      Verbose output
+    -c <config file>        Read config JSON from file or if `-` from STDIN
+
+Commands:
+
+    create <file> <num_levels> <source> Create an MBTiles file from a GDAL source
+    resume <file> <num_levels> <source> Resume the creation of a MBTiles file
+    config <source> <num_levels>        Generate gdal2mbt JSON configs
+    merge  <file> <mbtiles>...          Merge MBTiles files
+    levels <file> <num_levels>          Add or remove levels from MBTiles file
+    help                                This message
 """
 
 import json, logging
-from sys import exit, stderr, argv
-from os.path import join, isfile
+from sys import exit, stderr, stdin, argv
+from os.path import join, isfile, basename
 from getopt import getopt
 
 import gdal2mbtiles
@@ -20,41 +29,60 @@ def usage():
     stderr.write(__doc__ % argv[0])
     exit(1)
 
-resume = False
-config = None
-
-# Get input parameters from shell
-opts, args = getopt(argv[1:], 'hvrc:')
-for o, v in opts:
-    if o == '-c':
-        with open(v, 'rb') as fp: config = json.load(fp)
-    if o == '-h':
-        usage()
-    if o == '-v':
-        logging.basicConfig(level=logging.INFO, format='%(message)s')
-    if o == '-r':
-        resume = True
+config = {}
 
 try:
-    if config is None:
-        config = {
-            'source': args[0],
-            'num_levels': int(args[1]),
-            'mbtiles': args[2]
-        }
-    elif len(args) >= 1:
-        config['mbtiles'] = args[0]
-    mbtiles = config['mbtiles'] = str(config['mbtiles'])
-    config['source'] = str(config['source'])
+    # Get input parameters from shell
+    command = argv[1].lower()
+    opts, args = getopt(argv[2:], 'c:hv')
+    for o, v in opts:
+        if o == '-s':
+            set_levels = int(v)
+        if o == '-c':
+            if v == '-':
+                config = json.load(stdin)
+            else:
+                if isfile(v):
+                    with open(v, 'rb') as fp: config = json.load(fp)
+                else:
+                    config = json.loads(v)
+        if o == '-h': usage()
+        if o == '-v':
+            logging.basicConfig(level=logging.INFO, format='%(message)s')
+
+    def update_config(keys, value=args): config.update(dict(zip(keys, args)))
+
+    if command == 'create':
+        update_config(('mbtiles', 'num_levels', 'source'))
+        if isfile(config['mbtiles']):
+            stderr.write("MBTiles file %s already exists, use -r to resume.\n" % config['mbtiles'])
+            exit(2)
+        else:
+            gdal2mbtiles.create(**config)
+
+    elif command == 'resume':
+        update_config(('mbtiles', 'num_levels', 'source'))
+        if isfile(config['mbtiles']): config.pop('metadata', None)
+        gdal2mbtiles.resume(**config)
+
+    elif command == 'merge':
+        gdal2mbtiles.merge(*args)
+
+    elif command == 'levels':
+        update_config(('mbtiles', 'num_levels'))
+        gdal2mbtiles.set_levels(set_levels, int(args[0]))
+
+    elif command == 'config':
+        update_config(('source', 'num_levels'))
+        source_name = basename(config['source'])
+        source_name = source_name[:source_name.rfind('.')]
+        name = config.get('metadata', {}).get('name', source_name).replace(' ','_')
+        mbtiles_tmpl = "%s.%%d.mbtiles" % name
+        count = 0
+        for sub in gdal2mbtiles.split(config['num_levels'], config['source']):
+            config['mbtiles'] = mbtiles_tmpl % count
+            config['sub_bounds'] = sub
+            print json.dumps(config)
+            count += 1
 except:
     usage()
-
-if isfile(mbtiles):
-    if resume:
-        config.pop('metadata', None)
-        gdal2mbtiles.resume(**config)
-    else:
-        stderr.write("MBTiles file %s already exists, use -r to resume.\n" % mbtiles)
-        exit(2)
-else:
-    gdal2mbtiles.create(**config)
