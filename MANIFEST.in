@@ -1,1 +1,6 @@
-include *.txt *.md
+gdal2mbt
+gdal2mbt.py
+setup.cfg
+setup.py
+LICENSE
+README.md
