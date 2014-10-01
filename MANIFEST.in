@@ -1,6 +1,6 @@
-gdal2mbt
-gdal2mbt.py
-setup.cfg
-setup.py
-LICENSE
-README.md
+include gdal2mbt
+include gdal2mbt.py
+include setup.cfg
+include setup.py
+include LICENSE
+include README.md
