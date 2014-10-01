@@ -70,7 +70,7 @@ def _copy_table(db, src, table):
     info("Copying table %s from %s" % (table, src))
     cur = db.cursor()
     cur.execute("ATTACH DATABASE ? AS attached_db", (src,))
-    cur.execute("INSERT INTO tiles SELECT * FROM attached_db."+table)
+    cur.execute("INSERT INTO %s SELECT * FROM %s" % (table, 'attached_db.'+table))
     cur.execute("DETACH DATABASE attached_db")
 
 def _create_mbtiles(fn, metadata={}):
