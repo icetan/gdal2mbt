@@ -27,7 +27,7 @@ Or use a config JSON file:
     "num_levels": 8
     "metadata": {
         "name": "goteborg",
-        "description": "Arial photos over Göteborg city"
+        "description": "Aerial photos over Göteborg city"
     }
 }
 ```
@@ -58,7 +58,7 @@ which will remove each merged MBTiles file.
 gdal2mbt merge -s goteborg.*.mbtiles
 ```
 
-Add zoom levels that might have been omited due to the amount of tiles on zoom
+Add zoom levels that might have been omitted due to the amount of tiles on zoom
 level 0 at time of creation.
 
 ```sh
