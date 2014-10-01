@@ -9,6 +9,12 @@
 ## Installation
 
 ```
+pip install https://github.com/icetan/gdal2mbt/archive/master.zip
+```
+
+Or from source
+
+```
 git clone https://github.com/icetan/gdal2mbt.git
 pip install -e gdal2mbt
 ```
@@ -19,7 +25,8 @@ pip install -e gdal2mbt
 gdal2mbt create goteborg.mbtiles 8 goteborg.vrt
 ```
 
-Or use a config JSON file:
+Or use a JSON config file with an optional metadata dictionary that will
+overwrite the defaults in the MBTiles metadata table.
 
 ```json
 {
