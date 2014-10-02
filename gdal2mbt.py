@@ -69,17 +69,37 @@ def _get_gdal_image(ds, ox, oy, w, h):
 def _copy_table(db, src, table):
     info("Copying table %s from %s" % (table, src))
     cur = db.cursor()
-    cur.execute("ATTACH DATABASE ? AS attached_db", (src,))
-    cur.execute("INSERT INTO %s SELECT * FROM %s" % (table, 'attached_db.'+table))
-    cur.execute("DETACH DATABASE attached_db")
+    cur.execute("ATTACH DATABASE ? AS _db", (src,))
+    cur.execute("INSERT INTO %s SELECT * FROM %s" % (table, '_db.'+table))
+    cur.execute("DETACH DATABASE _db")
+
+def _copy_tiles(db, src):
+    info("Copying tiles from %s" % src)
+    cur = db.cursor()
+    cur.execute("ATTACH DATABASE ? AS _db", (src,))
+    cur.execute("INSERT INTO images SELECT tile_data, NULL FROM _db.images")
+    cur.execute("INSERT INTO map\
+                 SELECT zoom_level, tile_column, tile_row, NULL\
+                 FROM _db.map")
+    cur.execute("DETACH DATABASE _db")
 
 def _create_mbtiles(fn, metadata={}):
     db = (sqlite3.connect(fn) if _isstr(fn) else fn)
 
     # Create empty MBTile file.
-    db.execute("CREATE TABLE metadata (name TEXT PRIMARY KEY, value TEXT)")
-    db.execute("CREATE TABLE tiles (zoom_level INTEGER,\
-                tile_column INTEGER, tile_row INTEGER, tile_data BLOB)")
+    db.execute("CREATE TABLE IF NOT EXISTS metadata\
+                (name TEXT PRIMARY KEY, value TEXT)")
+    db.execute("CREATE TABLE IF NOT EXISTS images\
+                (tile_data BLOB, tile_id INTEGER PRIMARY KEY)")
+    db.execute("CREATE TABLE IF NOT EXISTS map\
+                (zoom_level INTEGER,\
+                 tile_column INTEGER,\
+                 tile_row INTEGER,\
+                 tile_id INTEGER PRIMARY KEY)")
+    db.execute("CREATE VIEW IF NOT EXISTS tiles AS\
+                SELECT zoom_level, tile_column, tile_row, tile_data\
+                FROM map\
+                JOIN images ON map.tile_id = images.tile_id")
     _create_tile_index(db)
     for k, v in metadata.iteritems(): _insert_metadata(db, k, v)
     db.commit()
@@ -113,29 +133,23 @@ def _create_mbtiles_from_gdal(fn, ds, metadata={}):
 
 def _create_tile_index(db):
     info("Creating tile index")
-    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS tiles_idx ON tiles\
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS tiles_idx ON map\
                 (zoom_level, tile_column, tile_row)")
-    db.commit()
 
 def _drop_tile_index(db):
     info("Dropping tile index")
     db.execute("DROP INDEX IF EXISTS tiles_idx")
-    db.commit()
 
-def _create_zoom_level_index(db):
-    info("Creating zoom level index")
-    db.execute("CREATE INDEX IF NOT EXISTS zoom_level_idx ON tiles\
-                (zoom_level)")
-    db.commit()
-
-def _drop_zoom_level_index(db):
-    info("Dropping zoom level index")
-    db.execute("DROP INDEX IF EXISTS zoom_level_idx")
+def _transpose_levels(db, diff):
+    info("Transposing tiles zoom level by %d" % diff)
+    _drop_tile_index(db)
+    db.execute("UPDATE map SET zoom_level=zoom_level+?", (diff,))
+    _create_tile_index(db)
     db.commit()
 
 def _insert_tile(db, level, tx, ty, buf):
-    db.execute("INSERT INTO tiles(zoom_level, tile_column, tile_row, tile_data)\
-                VALUES(?, ?, ?, ?)", (level, tx, ty, buf))
+    db.execute("INSERT INTO images VALUES(?, NULL)", (buf,))
+    db.execute("INSERT INTO map VALUES(?, ?, ?, NULL)", (level, tx, ty))
 
 def _insert_metadata(db, name, value):
     db.execute("INSERT INTO metadata(name, value) VALUES(?, ?)", (name, value))
@@ -145,15 +159,16 @@ def _insert_bounds(db, left, bottom, right, top):
         'bounds', "%s,%s,%s,%s" % (left, bottom, right, top))
 
 def _read_metadata(db, name):
-    row = db.cursor().execute(
-        "SELECT value FROM metadata WHERE name=?", (name,)).fetchone()
-    return row[0]
+    cur = db.cursor()
+    cur.execute("SELECT value FROM metadata WHERE name=?", (name,))
+    return cur.fetchone()[0]
 
 def _tile_exists(db, level, tx, ty):
-    row = db.cursor().execute(
-        "SELECT COUNT(*) FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?",
-        (level, tx, ty)).fetchone()
-    return row[0] != 0
+    cur = db.cursor()
+    cur.execute("SELECT COUNT(*) FROM map\
+                 WHERE zoom_level=? AND tile_column=? AND tile_row=?",
+                (level, tx, ty))
+    return cur.fetchone()[0] != 0
 
 def _get_quad_mbtiles(db, level, tx, ty):
     img = Image.new('RGBA', (TILE_SIZE*2, TILE_SIZE*2), (0,)*4)
@@ -247,7 +262,6 @@ def resume(num_levels, mbtiles, source=None, sub_bounds=DEFAULT_SUB):
         img.save(out, format=format_)
         out.seek(0)
         _insert_tile(db, level, tx, ty, buffer(out.read()))
-        db.commit()
 
     in_xtiles, in_ytiles = get_level_tiles(levels[0])
     level_tiles = [w*h for w, h in (get_level_tiles(level) for level in levels)]
@@ -265,12 +279,24 @@ def resume(num_levels, mbtiles, source=None, sub_bounds=DEFAULT_SUB):
     except StopIteration:
         info("All tiles exist, doing nothing")
     else:
-        info("Starting at tile #%d" % get_tile_nr(*coord))
-        create_tile(*coord)
-
-        for coord in tile_coords:
-            info("At tile #%d of %d" % (get_tile_nr(*coord), total_tiles))
+        try:
+            #db.execute("PRAGMA synchronous=OFF")
+            #db.execute("PRAGMA journal_mode=WAL")
+            #db.commit()
+            info("Starting at tile #%d" % get_tile_nr(*coord))
             create_tile(*coord)
+
+            #count = 0
+            for coord in tile_coords:
+                info("At tile #%d of %d" % (get_tile_nr(*coord), total_tiles))
+                create_tile(*coord)
+                db.commit()
+                #if count % 5 == 0: db.commit()
+                #count += 1
+        finally:
+            #db.execute("PRAGMA journal_mode=DELETE")
+            #db.execute("PRAGMA synchronous=NORMAL")
+            db.commit()
 
 def split(num_levels, source):
     ds = _get_gdal_dataset(source)
@@ -288,33 +314,30 @@ def merge(out, *mbtiles):
         if isfile(out):
             out = sqlite3.connect(out)
         else:
-            out = sqlite3.connect(out)
+            out = _create_mbtiles(out)
             _copy_table(out, mbtiles[0], 'metadata')
     for db in mbtiles:
-        _copy_table(out, db, 'tiles')
+        _copy_tiles(out, db)
 
 def set_levels(mbtiles, num_levels):
     db = (sqlite3.connect(mbtiles) if _isstr(mbtiles) else mbtiles)
     cur = db.cursor()
     #_create_zoom_level_index(db)
-    row = cur.execute("SELECT MAX(zoom_level) FROM tiles").fetchone()
+    row = cur.execute("SELECT MAX(zoom_level) FROM map").fetchone()
     diff = int(num_levels) - int(row[0])
     if diff > 0:
         info("Adding %d levels to MBTiles file" % diff)
-        _drop_tile_index(db)
-        info("Transposing tile coordinates")
-        db.execute("UPDATE tiles SET zoom_level=zoom_level+?", (diff,))
-        db.commit()
-        _create_tile_index(db)
+        _transpose_levels(db, diff)
         resume(num_levels, db)
     elif diff < 0:
         info("Dropping %d levels from MBTiles file" % -diff)
-        _drop_tile_index(db)
-        info("Deleting levels")
-        db.execute("DELETE FROM tiles WHERE zoom_level<?", (-diff,))
-        info("Transposing tile coordinates")
-        db.execute("UPDATE tiles SET zoom_level=zoom_level+?", (diff,))
+        db.execute("DELETE FROM images\
+                    WHERE images.tile_id IN\
+                    (SELECT images.tile_id FROM images\
+                     JOIN map ON map.tile_id = images.tile_id\
+                     WHERE map.zoom_level<?)", (-diff,))
+        db.execute("DELETE FROM map WHERE zoom_level<?", (-diff,))
         db.commit()
-        _create_tile_index(db)
+        _transpose_levels(db, diff)
     else:
         info("There are already %s zoom levels, doing nothing" % num_levels)
