@@ -5,7 +5,7 @@ from distutils.core import setup
 
 setup(
     name='gdal2mbt',
-    version='0.1.0',
+    version='0.1.1',
     install_requires = ['Pillow>=2.5', 'GDAL>=1.8'],
     py_modules=['gdal2mbt'],
     scripts=['gdal2mbt'],
