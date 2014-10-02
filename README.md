@@ -31,7 +31,7 @@ overwrite the defaults in the MBTiles metadata table.
 ```json
 {
     "source": "goteborg.vrt",
-    "num_levels": 8
+    "num_levels": 8,
     "metadata": {
         "name": "goteborg",
         "description": "Aerial photos over Göteborg city"
