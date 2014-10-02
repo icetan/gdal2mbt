@@ -43,7 +43,7 @@ def update_config(keys, value=args):
 try:
     # Get input parameters from shell
     command = argv[1].lower()
-    opts, args = getopt(argv[2:], 'c:vs')
+    opts, args = getopt(argv[2:], 'c:rvs')
     for o, v in opts:
         if o == '-c':
             if v == '-':
