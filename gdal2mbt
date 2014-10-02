@@ -4,18 +4,31 @@
 
 Options:
 
-    -c <config file>        Read config JSON from file or if `-` from STDIN
-    -s                      Use with `merge` to delete files after they are merged
-    -r                      Resume the creation of a MBTiles file, use with `create`
-    -v                      Verbose output
+    -c <config file>    Read config JSON from file or if `-` from STDIN.
+
+    -v                  Verbose output.
 
 Commands:
 
-    create <file> <num_levels> <source> Create an MBTiles file from a GDAL source
-    config <source> <num_levels>        Generate gdal2mbt JSON configs
-    merge  <file> <mbtiles>...          Merge MBTiles files
-    levels <file> <num_levels>          Add or remove levels from MBTiles file
-    help                                This message
+    create <file> <num_levels> <source>
+
+        Create an MBTiles file from a GDAL source.
+
+        -r      Resume the creation of a MBTiles file, use with `create`.
+
+        -m      Use a in-memory database while creating a new MBTiles file,
+                this is not compatible with the `-r` option.
+
+    config <source> <num_levels> Generate gdal2mbt JSON configs.
+
+    merge  <file> <mbtiles>...   Merge MBTiles files into one.
+
+        -s      Delete each file after they are merged, to save space during
+                the process.
+
+    levels <file> <num_levels>   Add or remove levels from MBTiles file.
+
+    help                         This message.
 
 """
 
@@ -23,6 +36,7 @@ import json, logging, os
 from sys import exit, stderr, stdin, argv
 from os.path import join, isfile, basename
 from getopt import getopt
+import sqlite3
 
 import gdal2mbt
 
@@ -43,7 +57,7 @@ def update_config(keys, value=args):
 try:
     # Get input parameters from shell
     command = argv[1].lower()
-    opts, args = getopt(argv[2:], 'c:rvs')
+    opts, args = getopt(argv[2:], 'c:rmvs')
     for o, v in opts:
         if o == '-c':
             if v == '-':
@@ -61,15 +75,26 @@ except:
 if command == 'create':
     update_config(('mbtiles', 'num_levels', 'source'))
     if isfile(config['mbtiles']):
+        if ('-m','') in opts:
+            stderr.write(("MBTiles file %s already exists (resume -r can't" +
+                         " be used together with in-memory database -m).\n") %
+                         config['mbtiles'])
+            exit(2)
         if ('-r','') in opts:
             config.pop('metadata', None)
             gdal2mbt.resume(**config)
         else:
             stderr.write("MBTiles file %s already exists, use -r to resume.\n" %
-                config['mbtiles'])
+                         config['mbtiles'])
             exit(2)
     else:
-        gdal2mbt.create(**config)
+        if ('-m','') in opts:
+            db_fn = config['mbtiles']
+            mem_db = config['mbtiles'] = sqlite3.connect(':memory:')
+            gdal2mbt.create(**config)
+            gdal2mbt.copy(mem_db, db_fn)
+        else:
+            gdal2mbt.create(**config)
 
 elif command == 'merge':
     if ('-s','') in opts:
@@ -96,3 +121,6 @@ elif command == 'config':
         config['sub_bounds'] = sub
         print json.dumps(config)
         count += 1
+
+elif command == 'help':
+    usage()

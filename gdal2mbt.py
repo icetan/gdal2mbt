@@ -83,27 +83,16 @@ def _copy_tiles(db, src):
                  FROM _db.map")
     cur.execute("DETACH DATABASE _db")
 
-def _create_mbtiles(fn, metadata={}):
-    db = (sqlite3.connect(fn) if _isstr(fn) else fn)
-
-    # Create empty MBTile file.
-    db.execute("CREATE TABLE IF NOT EXISTS metadata\
-                (name TEXT PRIMARY KEY, value TEXT)")
-    db.execute("CREATE TABLE IF NOT EXISTS images\
-                (tile_data BLOB, tile_id INTEGER PRIMARY KEY)")
-    db.execute("CREATE TABLE IF NOT EXISTS map\
-                (zoom_level INTEGER,\
-                 tile_column INTEGER,\
-                 tile_row INTEGER,\
-                 tile_id INTEGER PRIMARY KEY)")
-    db.execute("CREATE VIEW IF NOT EXISTS tiles AS\
-                SELECT zoom_level, tile_column, tile_row, tile_data\
-                FROM map\
-                JOIN images ON map.tile_id = images.tile_id")
-    _create_tile_index(db)
-    for k, v in metadata.iteritems(): _insert_metadata(db, k, v)
-    db.commit()
-    return db
+def _save_to_file(db, fn):
+    info("Copying database to file %s" % fn)
+    cur = db.cursor()
+    cur.execute("ATTACH DATABASE ? AS _db", (fn,))
+    cur.execute("INSERT INTO _db.metadata SELECT * FROM metadata")
+    cur.execute("INSERT INTO _db.images SELECT tile_data, NULL FROM images")
+    cur.execute("INSERT INTO _db.map\
+                 SELECT zoom_level, tile_column, tile_row, NULL\
+                 FROM map")
+    cur.execute("DETACH DATABASE _db")
 
 def _get_metadata_from_gdal(ds, metadata={}):
     ds = _get_gdal_dataset(ds)
@@ -129,7 +118,7 @@ def _get_metadata_from_gdal(ds, metadata={}):
     return metadata
 
 def _create_mbtiles_from_gdal(fn, ds, metadata={}):
-    return _create_mbtiles(fn, _get_metadata_from_gdal(ds, metadata))
+    return create_empty(fn, _get_metadata_from_gdal(ds, metadata))
 
 def _create_tile_index(db):
     info("Creating tile index")
@@ -206,6 +195,35 @@ def _tile_coord(x, y, tile_size=TILE_SIZE):
 
 
 # API functions
+
+def create_empty(fn, metadata={}):
+    db = (sqlite3.connect(fn) if _isstr(fn) else fn)
+
+    # Create empty MBTile file.
+    db.execute("CREATE TABLE IF NOT EXISTS metadata\
+                (name TEXT PRIMARY KEY, value TEXT)")
+    db.execute("CREATE TABLE IF NOT EXISTS images\
+                (tile_data BLOB, tile_id INTEGER PRIMARY KEY)")
+    db.execute("CREATE TABLE IF NOT EXISTS map\
+                (zoom_level INTEGER,\
+                 tile_column INTEGER,\
+                 tile_row INTEGER,\
+                 tile_id INTEGER PRIMARY KEY)")
+    db.execute("CREATE VIEW IF NOT EXISTS tiles AS\
+                SELECT zoom_level, tile_column, tile_row, tile_data\
+                FROM map\
+                JOIN images ON map.tile_id = images.tile_id")
+    _create_tile_index(db)
+    for k, v in metadata.iteritems(): _insert_metadata(db, k, v)
+    db.commit()
+    return db
+
+def copy(src, dst_fn):
+    if _isstr(dst_fn):
+        create_empty(dst_fn).close()
+        _save_to_file(src, dst_fn)
+    else:
+        raise Exception("Destination must be a filename string")
 
 def create(num_levels, mbtiles, source, sub_bounds=DEFAULT_SUB, metadata={}):
     ds = _get_gdal_dataset(source)
@@ -314,7 +332,7 @@ def merge(out, *mbtiles):
         if isfile(out):
             out = sqlite3.connect(out)
         else:
-            out = _create_mbtiles(out)
+            out = create_empty(out)
             _copy_table(out, mbtiles[0], 'metadata')
     for db in mbtiles:
         _copy_tiles(out, db)
