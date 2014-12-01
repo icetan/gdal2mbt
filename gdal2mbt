@@ -45,14 +45,18 @@ args = []
 
 def usage():
     stderr.write(__doc__ % argv[0])
+    exit()
+
+def error(e):
+    print "Error:", e
+    print "To get usage try: %s help" % argv[0]
     exit(1)
 
 def update_config(keys, value=args):
     try:
         config.update(dict(zip(keys, args)))
-    except:
-        usage()
-
+    except Exception as e:
+        error(e)
 
 try:
     # Get input parameters from shell
@@ -69,8 +73,8 @@ try:
                     config = json.loads(v)
         if o == '-v':
             logging.basicConfig(level=logging.INFO, format='%(message)s')
-except:
-    usage()
+except Exception as e:
+    error(e)
 
 if command == 'create':
     update_config(('mbtiles', 'num_levels', 'source'))
