@@ -30,6 +30,8 @@ Commands:
 
     help                         This message.
 
+    version                      Print gdal2mbt version.
+
 """
 
 import json, logging, os
@@ -37,6 +39,7 @@ from sys import exit, stderr, stdin, argv
 from os.path import join, isfile, basename
 from getopt import getopt
 import sqlite3
+from pkg_resources import require
 
 import gdal2mbt
 
@@ -129,3 +132,6 @@ def main():
 
     elif command == 'help':
         usage()
+
+    elif command == 'version':
+        print require('gdal2mbt')[0]
