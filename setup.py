@@ -8,7 +8,11 @@ setup(
     version='0.3.0',
     install_requires = ['Pillow>=2.5', 'GDAL>=1.8'],
     py_modules=['gdal2mbt'],
-    scripts=['gdal2mbt'],
+    entry_points={
+        'console_scripts': [
+            'gdal2mbt = cli:main',
+        ],
+    },
 
     description='Create MBTiles from GDAL files.',
     url='http://github.com/icetan/gdal2mbt/',
