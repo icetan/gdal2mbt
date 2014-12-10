@@ -5,7 +5,7 @@ from setuptools import setup
 
 setup(
     name='gdal2mbt',
-    version='0.4.0',
+    version='0.4.1',
     install_requires = ['Pillow>=2.5', 'GDAL>=1.8'],
     py_modules=['gdal2mbt'],
     scripts=['gdal2mbt_cli.py'],
