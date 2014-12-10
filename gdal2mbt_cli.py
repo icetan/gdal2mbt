@@ -63,6 +63,7 @@ def main():
             error(e)
 
     try:
+        if len(argv) < 2: usage()
         # Get input parameters from shell
         command = argv[1].lower()
         opts, args = getopt(argv[2:], 'c:rmvs')
@@ -135,3 +136,6 @@ def main():
 
     elif command == 'version':
         print require('gdal2mbt')[0]
+
+if __name__ == '__main__':
+    main()

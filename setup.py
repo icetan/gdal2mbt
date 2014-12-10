@@ -8,9 +8,10 @@ setup(
     version='0.4.0',
     install_requires = ['Pillow>=2.5', 'GDAL>=1.8'],
     py_modules=['gdal2mbt'],
+    scripts=['gdal2mbt_cli.py'],
     entry_points={
         'console_scripts': [
-            'gdal2mbt = cli:main',
+            'gdal2mbt = gdal2mbt_cli:main',
         ],
     },
 

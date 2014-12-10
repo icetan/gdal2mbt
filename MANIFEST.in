@@ -1,5 +1,5 @@
-include gdal2mbt
 include gdal2mbt.py
+include gdal2mbt_cli.py
 include setup.cfg
 include setup.py
 include LICENSE
