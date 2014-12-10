@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import math
-from itertools import dropwhile
+from itertools import islice
 from io import BytesIO
 from logging import info, debug
 from os.path import isfile
@@ -10,7 +10,6 @@ import sqlite3
 
 import gdal, ogr, osr
 from gdalconst import *
-
 from PIL import Image
 
 WGS84 = osr.SpatialReference()
@@ -51,6 +50,12 @@ def _get_mbtiles_extent(db):
             int((top - bottom) / resolution),
             resolution, srs)
 
+def _image_to_buffer(img, format_):
+    out = BytesIO()
+    img.save(out, format=format_)
+    out.seek(0)
+    return buffer(out.read())
+
 def _get_gdal_image(ds, ox, oy, w, h):
     if ds.RasterCount == 3:
         mode = 'RGB'
@@ -60,27 +65,29 @@ def _get_gdal_image(ds, ox, oy, w, h):
         raise Exception("Number of bands not supported %d" % ds.RasterCount)
     info("Reading GDAL raster x:%d y:%d %dx%d" % (ox, oy, w, h))
     raw = ds.ReadRaster(ox, oy, w, h)
+    # Check if image is over an empty area.
+    if all(ord(x) == 0 for x in raw):
+        return None
     # Convert GDALs raster format to a sane one. rrrgggbbb -> rgbrgbrgb
     data = ''.join(''.join(raw[x+w*y::w*h]\
         for x in xrange(0,w))\
         for y in xrange(0,h))
     return Image.frombytes(mode, (w, h), data)
 
-def _copy_table(db, src, table):
-    info("Copying table %s from %s" % (table, src))
+def _copy_tables(db, src, tables):
+    info("Copying tables %s from %s" % (', '.join(tables), src))
     cur = db.cursor()
     cur.execute("ATTACH DATABASE ? AS _db", (src,))
-    cur.execute("INSERT INTO %s SELECT * FROM %s" % (table, '_db.'+table))
+    for table in tables:
+        cur.execute("INSERT INTO %s SELECT * FROM %s" % (table, '_db.'+table))
     cur.execute("DETACH DATABASE _db")
 
 def _copy_tiles(db, src):
     info("Copying tiles from %s" % src)
     cur = db.cursor()
     cur.execute("ATTACH DATABASE ? AS _db", (src,))
-    cur.execute("INSERT INTO images SELECT tile_data, NULL FROM _db.images")
-    cur.execute("INSERT INTO map\
-                 SELECT zoom_level, tile_column, tile_row, NULL\
-                 FROM _db.map")
+    cur.execute("INSERT INTO images SELECT * FROM _db.images WHERE tile_id!=0")
+    cur.execute("INSERT INTO map SELECT * FROM _db.map")
     cur.execute("DETACH DATABASE _db")
 
 def _save_to_file(db, fn):
@@ -136,9 +143,18 @@ def _transpose_levels(db, diff):
     _create_tile_index(db)
     db.commit()
 
-def _insert_tile(db, level, tx, ty, buf):
-    db.execute("INSERT INTO images VALUES(?, NULL)", (buf,))
-    db.execute("INSERT INTO map VALUES(?, ?, ?, NULL)", (level, tx, ty))
+def _insert_tile_map(db, id_, level, tx, ty):
+    db.execute("INSERT INTO map VALUES(?, ?, ?, ?)", (level, tx, ty, id_))
+
+def _insert_tile_image(db, id_, buf, ignore=False):
+    if ignore:
+        db.execute("INSERT OR IGNORE INTO images VALUES(?, ?)", (buf, id_))
+    else:
+        db.execute("INSERT INTO images VALUES(?, ?)", (buf, id_))
+
+def _insert_tile(db, id_, level, tx, ty, buf):
+    _insert_tile_map(db, id_, level, tx, ty)
+    _insert_tile_image(db, id_, buf)
 
 def _insert_metadata(db, name, value):
     db.execute("INSERT INTO metadata(name, value) VALUES(?, ?)", (name, value))
@@ -152,27 +168,28 @@ def _read_metadata(db, name):
     cur.execute("SELECT value FROM metadata WHERE name=?", (name,))
     return cur.fetchone()[0]
 
-def _tile_exists(db, level, tx, ty):
+def _tile_count(db):
     cur = db.cursor()
-    cur.execute("SELECT COUNT(*) FROM map\
-                 WHERE zoom_level=? AND tile_column=? AND tile_row=?",
-                (level, tx, ty))
-    return cur.fetchone()[0] != 0
+    cur.execute("SELECT COUNT(*) FROM map")
+    return cur.fetchone()[0]
 
 def _get_quad_mbtiles(db, level, tx, ty):
-    img = Image.new('RGBA', (TILE_SIZE*2, TILE_SIZE*2), (0,)*4)
+    img = None
     x, y = tx*2, ty*2
     for row in db.cursor().execute(
         "SELECT tile_column, tile_row, tile_data \
-         FROM tiles WHERE zoom_level=%d AND (%s)" %\
+         FROM map JOIN images ON map.tile_id=images.tile_id \
+         WHERE map.tile_id!=0 AND zoom_level=%d AND (%s)" %\
             (level+1, " OR ".join(("(tile_column=? AND tile_row=?)",)*4)),
         (x, y, x+1, y, x, y+1, x+1, y+1)):
 
         info("Reading MBTile %d %d %d" % (level+1, row[0], row[1]))
 
+        if img is None:
+            img = Image.new('RGBA', (TILE_SIZE*2, TILE_SIZE*2), (0,)*4)
         tile_img = Image.open(BytesIO(row[2]))
         img.paste(tile_img, ((row[0]-x)*TILE_SIZE, (1+y-row[1])*TILE_SIZE))
-    img.thumbnail((TILE_SIZE, TILE_SIZE))
+    if img is not None: img.thumbnail((TILE_SIZE, TILE_SIZE))
     return img
 
 def _trans(from_srs, to_srs, x, y):
@@ -208,7 +225,7 @@ def create_empty(fn, metadata={}):
                 (zoom_level INTEGER,\
                  tile_column INTEGER,\
                  tile_row INTEGER,\
-                 tile_id INTEGER PRIMARY KEY)")
+                 tile_id INTEGER)")
     db.execute("CREATE VIEW IF NOT EXISTS tiles AS\
                 SELECT zoom_level, tile_column, tile_row, tile_data\
                 FROM map\
@@ -253,9 +270,13 @@ def resume(num_levels, mbtiles, source=None, sub_bounds=DEFAULT_SUB):
         return (max(0, left), max(0, bottom),
                 min(level_xtiles, right), min(level_ytiles, top))
 
+    def get_total_level_sub_tiles(level):
+        left, bottom, right, top = get_level_sub(level)
+        return (right - left) * (top - bottom)
+
     def get_tile_nr(level, tx, ty):
-        w, h = get_level_tiles(level)
-        return 1 + sum(level_tiles[:levels[0]-level]) + tx + ty * w
+        l = levels[0]-level
+        return level_sum_tiles[l] + tx + ty * level_tile_dims[l][0] + 1
 
     def get_gdal_tile(level, tx, ty):
         if ds is None: raise Exception("No GDAL source supplied")
@@ -264,57 +285,69 @@ def resume(num_levels, mbtiles, source=None, sub_bounds=DEFAULT_SUB):
             (in_ytiles*TILE_SIZE - in_height)
         img = _get_gdal_image(ds, ox, max(0, oy),
             min(TILE_SIZE, in_width-ox), min(TILE_SIZE, TILE_SIZE+oy))
-        if  TILE_SIZE+oy < TILE_SIZE or in_width-ox < TILE_SIZE:
+        if img is None:
+            return None
+        if TILE_SIZE+oy < TILE_SIZE or in_width-ox < TILE_SIZE:
             img_ = Image.new('RGBA', (TILE_SIZE, TILE_SIZE), (0,)*4)
             img.paste(img, (0, min(TILE_SIZE, TILE_SIZE+oy)))
             img = img_
         return img
 
-    def create_tile(level, tx, ty):
-        info("Creating tile %d/%d/%d" % (level, tx, ty))
-        out = BytesIO()
+    def create_tile(id_, level, tx, ty):
+        info("Creating tile %d (%d/%d/%d)" % (id_, level, tx, ty))
         if level == levels[0]:
             img = get_gdal_tile(level, tx, ty)
         else:
             img = _get_quad_mbtiles(db, level, tx, ty)
-        img.save(out, format=format_)
-        out.seek(0)
-        _insert_tile(db, level, tx, ty, buffer(out.read()))
+        if img is None:
+            info("Tile %d (%d/%d/%d) is empty" % (id_, level, tx, ty))
+            _insert_tile_map(db, 0, level, tx, ty)
+        else:
+            _insert_tile(db, id_, level, tx, ty, _image_to_buffer(img, format_))
+
+    def create_transparent_tile():
+        img = Image.new('RGBA', (TILE_SIZE, TILE_SIZE), (0,)*4)
+        _insert_tile_image(db, 0, _image_to_buffer(img, format_), ignore=True)
 
     in_xtiles, in_ytiles = get_level_tiles(levels[0])
-    level_tiles = [w*h for w, h in (get_level_tiles(level) for level in levels)]
+    level_tile_dims = [(w, h, w*h) for w, h in (get_level_tiles(level) for level in levels)]
+    level_tiles = map(lambda x: x[2], level_tile_dims)
+    level_sum_tiles = [sum(level_tiles[:i]) for i in range(len(levels))]
+    level_subs = map(lambda l: get_level_sub(l), levels)
     total_tiles = sum(level_tiles)
+    total_sub_tiles = sum(get_total_level_sub_tiles(l) for l in levels)
 
-    tile_coords = ((level, x, y)
-        for level, (left, bottom, right, top) in\
-        ((level, get_level_sub(level)) for level in levels)\
-        for y in xrange(bottom, top)\
-        for x in xrange(left, right))
+    create_transparent_tile()
+
+    info("Checking for existing tiles")
+    start_at = _tile_count(db)
+
+    tile_coords = islice(
+        enumerate(
+            ((level, x, y)
+                for level, (left, bottom, right, top) in\
+                    ((level, level_subs[levels[0]-level]) for level in levels)\
+                for y in xrange(bottom, top)\
+                for x in xrange(left, right)
+            ), 1
+        ), start_at, None
+    )
 
     try:
-        info("Checking for existing tiles")
-        coord = dropwhile(lambda coord: _tile_exists(db, *coord), tile_coords).next()
-    except StopIteration:
-        info("All tiles exist, doing nothing")
-    else:
-        try:
-            #db.execute("PRAGMA synchronous=OFF")
-            #db.execute("PRAGMA journal_mode=WAL")
-            #db.commit()
-            info("Starting at tile #%d" % get_tile_nr(*coord))
-            create_tile(*coord)
-
-            #count = 0
-            for coord in tile_coords:
-                info("At tile #%d of %d" % (get_tile_nr(*coord), total_tiles))
-                create_tile(*coord)
-                db.commit()
-                #if count % 5 == 0: db.commit()
-                #count += 1
-        finally:
-            #db.execute("PRAGMA journal_mode=DELETE")
-            #db.execute("PRAGMA synchronous=NORMAL")
+        #db.execute("PRAGMA synchronous=OFF")
+        #db.execute("PRAGMA journal_mode=WAL")
+        #db.commit()
+        for n, coord in tile_coords:
+            id_ = get_tile_nr(*coord)
+            info("At tile #%d of %d id:%d" % (n, total_sub_tiles, id_))
+            create_tile(id_, *coord)
             db.commit()
+    finally:
+        #db.execute("PRAGMA journal_mode=DELETE")
+        #db.execute("PRAGMA synchronous=NORMAL")
+        db.commit()
+
+    info("Done!")
 
 def split(num_levels, source):
     ds = _get_gdal_dataset(source)
@@ -333,7 +366,7 @@ def merge(out, *mbtiles):
             out = sqlite3.connect(out)
         else:
             out = create_empty(out)
-            _copy_table(out, mbtiles[0], 'metadata')
+            _copy_tables(out, mbtiles[0], ('metadata',))
     for db in mbtiles:
         _copy_tiles(out, db)
 
