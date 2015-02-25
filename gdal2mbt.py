@@ -63,10 +63,10 @@ def _get_gdal_image(ds, ox, oy, w, h):
         mode = 'RGBA'
     else:
         raise Exception("Number of bands not supported %d" % ds.RasterCount)
-    info("Reading GDAL raster x:%d y:%d %dx%d" % (ox, oy, w, h))
+    info("Reading GDAL raster (%s) x:%d y:%d %dx%d" % (mode, ox, oy, w, h))
     raw = ds.ReadRaster(ox, oy, w, h)
-    # Check if image is over an empty area.
-    if all(ord(x) == 0 for x in raw):
+    # Check if image is empty.
+    if all(ord(x) == 0 for x in (raw[-len(raw)/4:] if mode == 'RGBA' else raw)):
         return None
     # Convert GDALs raster format to a sane one. rrrgggbbb -> rgbrgbrgb
     data = ''.join(''.join(raw[x+w*y::w*h]\
