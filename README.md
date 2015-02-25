@@ -5,21 +5,34 @@
 ## Requirements
 
 - Python 2.7
+- GDAL >=1.8
 
 ## Installation
+
+Stable release from PyPI.
+
+```
+pip install gdal2mbt
+```
+
+Or latest straight from the source.
 
 ```
 pip install https://github.com/icetan/gdal2mbt/archive/master.zip
 ```
 
-Or from source
+# Development
+
+To browse source and make modifications.
 
 ```
 git clone https://github.com/icetan/gdal2mbt.git
-pip install -e gdal2mbt
+pip install -e ./gdal2mbt
 ```
 
 ## Creating a MBTile file
+
+Create a MBTile from a GDAL VRT. ([Creating a VRT](http://www.gdal.org/gdalbuildvrt.html))
 
 ```sh
 gdal2mbt create goteborg.mbtiles 8 goteborg.vrt
